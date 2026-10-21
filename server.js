@@ -3,6 +3,7 @@
 require('dotenv').config();
 
 const express = require('express');
+const path = require('node:path');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -46,6 +47,10 @@ function createApp() {
     app.use(express.json({ limit: '10kb' }));
     app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
     app.use(rateLimiter);
+    app.use('/app', express.static(path.join(__dirname, 'frontend'), {
+        index: 'index.html',
+        maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0
+    }));
 
     /** Returns service liveness using the standard success response shape. */
     app.get('/', (req, res) => {

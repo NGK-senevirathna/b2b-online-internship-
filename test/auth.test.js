@@ -110,6 +110,21 @@ async function requestJson(path, options = {}) {
 }
 
 test('registration, login, and role-protected routes follow the authorization policy', async (t) => {
+    await t.test('serves the frontend and its same-origin assets', async () => {
+        const page = await fetch(`${baseUrl}/app/`);
+        assert.equal(page.status, 200);
+        assert.match(page.headers.get('content-type'), /text\/html/);
+        assert.match(await page.text(), /Create your account/);
+
+        const script = await fetch(`${baseUrl}/app/app.js`);
+        assert.equal(script.status, 200);
+        assert.match(await script.text(), /API_BASE/);
+
+        const styles = await fetch(`${baseUrl}/app/styles.css`);
+        assert.equal(styles.status, 200);
+        assert.match(await styles.text(), /--purple:/);
+    });
+
     const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const buyer = {
         username: `buyer-${suffix}`,

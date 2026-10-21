@@ -27,6 +27,7 @@ models/sessionModel.js             Atomic session and refresh-token lifecycle
 migrations/001_initial_schema.sql  Users, sessions, refresh tokens, and rate-limit tables
 scripts/migrate.js                 Ordered migration runner
 routes/authRoutes.js               Auth API route definitions
+frontend/                           Responsive browser UI (HTML, CSS, JavaScript)
 server.js                          Express setup, health checks, startup/shutdown
 test/                               HTTP and optional PostgreSQL integration tests
 docker-compose.yml                 Local PostgreSQL for development
@@ -69,6 +70,8 @@ npm start
 ```
 
 The API listens on `http://localhost:5000` by default. On another deployment, set `DATABASE_URL` to the PostgreSQL connection string; run `npm run db:migrate` as a deployment step before starting the service. Runtime startup verifies the database connection and fails clearly if PostgreSQL is unavailable.
+
+Open the web interface at `http://localhost:5000/app/` (or your configured port). It is served from the same Express origin as the API, so no separate frontend server or CORS origin is needed.
 
 > The Compose database password and `.env.example` values are for local development only. Do not use them in a shared or production environment. Never commit `.env`.
 
@@ -227,6 +230,8 @@ The profile request succeeds; the Buyer request to the Seller panel returns 403.
 
 The same requests can be sent from Postman or Thunder Client with JSON content type and the corresponding authorization/header values.
 
+The web interface at `/app/` provides Buyer registration and sign-in, conditionally asks for the role-provisioning key for Seller/Admin registration, displays the authenticated profile, and calls the role-specific protected API. Access and refresh tokens are held in JavaScript memory only; reloading the page clears them and requires sign-in again. This avoids storing credentials in browser localStorage/sessionStorage. For production, consider a backend-for-frontend with secure, HttpOnly cookies.
+
 ## Tests and validation
 
 The default suite is self-contained and tests HTTP behavior with isolated in-memory test doubles:
@@ -262,6 +267,7 @@ git diff --check
 | Refresh rotation and token replay handling | Session model/controller | `npm test` verifies single-use refresh and family revocation; PostgreSQL test exercises atomic DB behavior |
 | Buyer/Seller/Admin route policies | Role middleware and routes | `npm test` verifies expected 200/401/403 outcomes |
 | Shared IP rate limits | PostgreSQL rate-limit store | `npm run test:db` checks shared counter operations |
+| Same-origin responsive web portal | `frontend/`, served at `/app/` by Express | `npm test` verifies HTML, JavaScript, and CSS assets are served |
 | HTTP hardening, logging, error handling, health | `server.js`, middleware | `npm test`, manual readiness probe, and production configuration review |
 | Reproducible setup/API usage | This README, `.env.example`, Compose file | Follow setup and curl walkthrough |
 

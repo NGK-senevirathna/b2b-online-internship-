@@ -8,6 +8,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY config ./config
 COPY controllers ./controllers
+COPY frontend ./frontend
 COPY middleware ./middleware
 COPY migrations ./migrations
 COPY models ./models
