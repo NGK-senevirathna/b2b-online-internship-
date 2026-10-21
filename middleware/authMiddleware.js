@@ -2,6 +2,8 @@
 
 const jwt = require('jsonwebtoken');
 const { getJwtConfig } = require('../config/jwtConfig');
+const userModel = require('../models/userModel');
+const sessionModel = require('../models/sessionModel');
 
 /**
  * Verifies a signed JWT from the Authorization: Bearer header.
@@ -10,7 +12,7 @@ const { getJwtConfig } = require('../config/jwtConfig');
  * @param {import('express').NextFunction} next Express middleware callback.
  * @returns {void} Continues on success or sends a standardized authentication error.
  */
-function authenticateToken(req, res, next) {
+async function authenticateToken(req, res, next) {
     const authorization = req.get('authorization');
     const match = typeof authorization === 'string'
         ? authorization.match(/^Bearer ([^\s]+)$/i)
@@ -24,20 +26,64 @@ function authenticateToken(req, res, next) {
         });
     }
 
+    let claims;
     try {
         const jwtConfig = getJwtConfig();
-        req.user = jwt.verify(match[1], jwtConfig.secret, {
+        claims = jwt.verify(match[1], jwtConfig.secret, {
             algorithms: ['HS256'],
             issuer: jwtConfig.issuer,
             audience: jwtConfig.audience
         });
-        return next();
     } catch (_error) {
         return res.status(401).json({
             success: false,
             error: 'Invalid or expired token.',
             statusCode: 401
         });
+    }
+
+    if (
+        typeof claims !== 'object' ||
+        typeof claims.sid !== 'string' ||
+        typeof claims.id !== 'string' ||
+        claims.sub !== claims.id
+    ) {
+        return res.status(401).json({
+            success: false,
+            error: 'Invalid or expired token.',
+            statusCode: 401
+        });
+    }
+
+    try {
+        const active = await sessionModel.isSessionActive(claims.sid);
+        if (!active) {
+            return res.status(401).json({
+                success: false,
+                error: 'Invalid or expired token.',
+                statusCode: 401
+            });
+        }
+
+        const user = await userModel.findById(claims.id);
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                error: 'Invalid or expired token.',
+                statusCode: 401
+            });
+        }
+
+        req.user = {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+            sid: claims.sid
+        };
+        return next();
+    } catch (error) {
+        return next(error);
     }
 }
 

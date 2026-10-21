@@ -1,120 +1,149 @@
 # B2B Auth Microservice
 
-A modular Node.js and Express.js authentication service for B2B applications. It supports account registration, password-based login, signed JSON Web Tokens, and role-protected API routes for Buyer, Seller, and Admin users.
+A modular Node.js and Express service for B2B account registration, JWT authentication, and role-based authorization. It persists users and revocable authentication sessions in PostgreSQL, rotates opaque refresh tokens, and shares rate-limit counters across service instances through PostgreSQL.
 
-> **Persistence notice:** The included database adapter is in-memory and intended for local development and evaluation. It loses all data when the process restarts and is not shared between multiple instances. Replace `models/userModel.js` with a durable database adapter before production deployment.
+## Capabilities
 
-## Features
-
-- Password hashing with bcryptjs (12 salt rounds).
-- JWTs signed with HS256 and a configurable expiration (one hour by default).
-- Authorization based on validated `Buyer`, `Seller`, and `Admin` roles.
-- Seller and Admin registration protected by a separate role-provisioning secret; public registrations are Buyers by default.
-- Helmet security headers, configurable CORS, request logging, and IP rate limiting (100 requests per 15 minutes).
-- Centralized error handling and consistent success/failure response formats.
-- In-memory user model with a clean asynchronous interface for database replacement.
+- Buyer, Seller, and Admin roles with role-protected API routes.
+- bcryptjs password hashing (12 salt rounds), input validation, and case-insensitive identity uniqueness.
+- HS256 access JWTs (one-hour default) and rotating, hashed refresh tokens.
+- Immediate access-token invalidation on logout, account lookup on protected requests, and refresh-token replay detection.
+- PostgreSQL persistence and ordered, advisory-lock-protected SQL migrations.
+- Helmet, configurable CORS, Morgan request logging, JSON body limits, and shared PostgreSQL-backed IP rate limiting.
+- Readiness/liveness endpoints, graceful shutdown, standardized JSON errors, and automated tests.
 
 ## Architecture
 
 ```text
-config/jwtConfig.js              JWT settings and secret validation
-controllers/authController.js    Registration, login, and protected responses
-middleware/authMiddleware.js    JWT authentication
-middleware/roleMiddleware.js    Role authorization
-middleware/errorMiddleware.js   Not-found and centralized error responses
-middleware/rateLimiter.js       IP request limit
-models/userModel.js             In-memory persistence adapter
-routes/authRoutes.js             Authentication and protected routes
-server.js                        Express configuration and startup
+config/database.js                 PostgreSQL pool and connection checks
+config/jwtConfig.js                JWT settings and secret validation
+controllers/authController.js      Registration, login, refresh, logout, API responses
+middleware/authMiddleware.js      JWT verification and active-session/user lookup
+middleware/roleMiddleware.js      Role authorization
+middleware/errorMiddleware.js     Not-found and global error responses
+middleware/rateLimiter.js         Shared PostgreSQL rate-limit store
+models/userModel.js                Parameterized PostgreSQL user operations
+models/sessionModel.js             Atomic session and refresh-token lifecycle
+migrations/001_initial_schema.sql  Users, sessions, refresh tokens, and rate-limit tables
+scripts/migrate.js                 Ordered migration runner
+routes/authRoutes.js               Auth API route definitions
+server.js                          Express setup, health checks, startup/shutdown
+test/                               HTTP and optional PostgreSQL integration tests
+docker-compose.yml                 Local PostgreSQL for development
 ```
 
-The controller depends on the user model's asynchronous interface rather than its storage implementation. The model can be replaced with a MongoDB, PostgreSQL, or MySQL repository while keeping the HTTP routes and controller contract stable.
+Controllers use asynchronous model interfaces. Parameterized SQL protects data operations, unique database constraints handle concurrent duplicate registrations, and refresh-token changes are transactional. The migration runner serializes concurrent deployments with a PostgreSQL advisory lock.
 
-## Requirements and installation
+## Prerequisites
 
 - Node.js 18 or newer
 - npm
+- Docker with Docker Compose (for the included local PostgreSQL service), or a reachable PostgreSQL 13+ database
 
-Install dependencies:
+## Reproducible local setup
 
-```bash
-npm install
-```
-
-Create a local environment file and set private values:
+Install exact locked dependencies and create local configuration:
 
 ```bash
+npm ci
 cp .env.example .env
 ```
 
-At minimum, replace `JWT_SECRET` with a cryptographically random value of at least 32 characters. Generate one, for example, with:
+Start PostgreSQL using the development-only credentials in `docker-compose.yml`:
+
+```bash
+docker compose up -d postgres
+```
+
+Change `JWT_SECRET` and `ROLE_PROVISIONING_KEY` in `.env` to different, randomly generated values of at least 32 characters. For example, generate one with:
 
 ```bash
 openssl rand -base64 48
 ```
 
-Set `ROLE_PROVISIONING_KEY` to a different random secret if you need to provision Seller or Admin accounts through the registration endpoint. Keep both values in a secret manager in deployed environments. Do not commit `.env`.
-
-Start the service:
+Apply database migrations, then start the service:
 
 ```bash
+npm run db:migrate
 npm start
 ```
 
-By default, the service listens on `http://localhost:5000`.
+The API listens on `http://localhost:5000` by default. On another deployment, set `DATABASE_URL` to the PostgreSQL connection string; run `npm run db:migrate` as a deployment step before starting the service. Runtime startup verifies the database connection and fails clearly if PostgreSQL is unavailable.
+
+> The Compose database password and `.env.example` values are for local development only. Do not use them in a shared or production environment. Never commit `.env`.
+
+### Run the complete stack in Docker
+
+After copying `.env.example` to `.env` and replacing `JWT_SECRET` and `ROLE_PROVISIONING_KEY` with different random values, start both the PostgreSQL database and the API container:
+
+```bash
+docker compose up --build -d
+docker compose ps
+curl --fail http://localhost:5000/health/ready
+```
+
+The API container waits for PostgreSQL health, applies pending migrations, then starts the service. Stop containers without deleting the persistent database volume with:
+
+```bash
+docker compose down
+```
 
 ### Environment variables
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `NODE_ENV` | No | `development` | Controls logging format. |
+| `NODE_ENV` | No | `development` | Controls request-log format. |
 | `PORT` | No | `5000` | HTTP listen port (1-65535). |
+| `HOST_PORT` | No | `5000` | Host port published by Docker Compose. |
+| `POSTGRES_PASSWORD` | Local Compose only | `b2b_auth_dev_password` | Development database password; use a managed secret and change it outside local development. |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection URI. |
+| `DATABASE_SSL` | No | `false` | Set `true` to enable TLS for PostgreSQL. |
+| `DATABASE_SSL_REJECT_UNAUTHORIZED` | No | `true` | Set `false` only when the database TLS certificate policy explicitly requires it. |
+| `DB_POOL_MAX` | No | `10` | Maximum PostgreSQL pool connections per service process. |
 | `JWT_SECRET` | Yes | — | HS256 signing secret; at least 32 characters. |
 | `JWT_EXPIRES_IN` | No | `1h` | `jsonwebtoken` duration string for access tokens. |
-| `CORS_ORIGIN` | No | `*` | Comma-separated allowed origins; use explicit origins in production. |
-| `ROLE_PROVISIONING_KEY` | Only for API Seller/Admin provisioning | — | Separate secret, at least 32 characters, supplied in the `X-Role-Provisioning-Key` header. |
+| `REFRESH_TOKEN_TTL_DAYS` | No | `30` | Sliding refresh-session lifetime, from 1 to 365 days. |
+| `CORS_ORIGIN` | No | `*` | Comma-separated allowed origins. Use explicit frontend origins in production. |
+| `TRUST_PROXY` | No | — | Trusted proxy hop count or comma-separated proxy addresses/subnets. Configure only for a known reverse-proxy topology. |
+| `ROLE_PROVISIONING_KEY` | For API Seller/Admin provisioning | — | Separate secret (at least 32 characters), sent as `X-Role-Provisioning-Key`. Restrict it to trusted provisioning systems. |
 
-## API conventions
+## API response format
 
-All successful responses use:
+Success:
+
+```json
+{ "success": true, "message": "Description.", "data": {} }
+```
+
+Failure:
+
+```json
+{ "success": false, "error": "Description.", "statusCode": 400 }
+```
+
+Protected routes require `Authorization: Bearer <ACCESS_TOKEN>`.
+
+## API reference
+
+### `GET /` and `GET /health/live`
+
+Liveness endpoints (HTTP 200):
 
 ```json
 {
   "success": true,
-  "message": "Description of the result.",
-  "data": {}
-}
-```
-
-All failures use:
-
-```json
-{
-  "success": false,
-  "error": "Description of the failure.",
-  "statusCode": 400
-}
-```
-
-Protected endpoints require `Authorization: Bearer <TOKEN>`.
-
-## API endpoints
-
-### `GET /`
-
-Health/readiness response.
-
-```json
-{
-  "success": true,
-  "message": "B2B Auth Microservice is running.",
+  "message": "Service is live.",
   "data": { "status": "ok" }
 }
 ```
 
+### `GET /health/ready`
+
+Checks PostgreSQL connectivity. Returns HTTP 200 when ready; database errors are handled centrally and readiness does not report success if the database is down.
+
 ### `POST /api/auth/register`
 
-Creates an account. `username` must be 3-30 letters, digits, dots, underscores, or hyphens; `email` must be valid; and `password` must be at least 8 characters and at most 72 UTF-8 bytes. Username and email uniqueness is case-insensitive. If omitted, `role` defaults to `Buyer`. Supported roles are `Buyer`, `Seller`, and `Admin`. Public registration may create only Buyers; Seller and Admin registration requires the provisioning header described below.
+Requires username (3-30 allowed characters), valid email, and password (8 or more characters, no more than 72 UTF-8 bytes). Username and email uniqueness is case-insensitive. If omitted, `role` defaults to `Buyer`. Public requests can create Buyers only; Seller and Admin registration requires the trusted role-provisioning key.
 
 Request:
 
@@ -122,190 +151,57 @@ Request:
 {
   "username": "buyer01",
   "email": "buyer@example.com",
-  "password": "correct-horse-battery",
-  "role": "Buyer"
+  "password": "correct-horse-battery"
 }
 ```
 
-Privileged-role provisioning request header:
+For a provisioned Seller or Admin, add:
 
 ```http
 X-Role-Provisioning-Key: <ROLE_PROVISIONING_KEY>
 ```
 
-Success (`201`):
-
-```json
-{
-  "success": true,
-  "message": "User registered successfully.",
-  "data": {
-    "user": {
-      "id": "e22a15b4-cad5-4e16-b26b-fd6ba109f203",
-      "username": "buyer01",
-      "email": "buyer@example.com",
-      "role": "Buyer"
-    }
-  }
-}
-```
+and include `"role": "Seller"` or `"role": "Admin"` in the JSON body. Success returns HTTP 201 and the public user profile; password hashes are never returned.
 
 ### `POST /api/auth/login`
 
-Authenticates by `username`, `email`, or `identifier`. Invalid credentials return the same generic `401` response.
-
-Request:
+Accepts a `username`, `email`, or `identifier` and a password. Invalid credentials return a generic HTTP 401 response.
 
 ```json
-{
-  "username": "buyer01",
-  "password": "correct-horse-battery"
-}
+{ "username": "buyer01", "password": "correct-horse-battery" }
 ```
 
-Success (`200`):
+Success returns the access token (`data.token`), refresh token (`data.refreshToken`), expiry metadata, and public profile.
+
+### `POST /api/auth/refresh`
+
+Exchanges a valid refresh token for a new access/refresh token pair. Each refresh token is single-use; replaying an already-consumed token revokes its entire session family.
 
 ```json
-{
-  "success": true,
-  "message": "Login successful.",
-  "data": {
-    "token": "<SIGNED_JWT>",
-    "tokenType": "Bearer",
-    "expiresIn": "1h",
-    "user": {
-      "id": "e22a15b4-cad5-4e16-b26b-fd6ba109f203",
-      "username": "buyer01",
-      "email": "buyer@example.com",
-      "role": "Buyer"
-    }
-  }
-}
+{ "refreshToken": "<OPAQUE_REFRESH_TOKEN>" }
 ```
+
+Clients must atomically replace their stored refresh token with the new `data.refreshToken`. Store refresh tokens in a secure client-side secret store; never log or expose them.
+
+### `POST /api/auth/logout`
+
+Requires an access token. Revokes its session and refresh-token family; all access tokens associated with that session are rejected immediately on subsequent requests.
 
 ### `GET /api/auth/me`
 
-Requires a valid token. Available to every authenticated role.
-
-```http
-Authorization: Bearer <SIGNED_JWT>
-```
-
-Success (`200`):
-
-```json
-{
-  "success": true,
-  "message": "Authenticated user profile.",
-  "data": {
-    "user": {
-      "id": "e22a15b4-cad5-4e16-b26b-fd6ba109f203",
-      "username": "buyer01",
-      "email": "buyer@example.com",
-      "role": "Buyer"
-    }
-  }
-}
-```
+Requires any valid, non-revoked session. Returns the current public account profile. The user record is loaded for each protected request, so role changes in the database take effect without waiting for access-token expiry.
 
 ### `GET /api/auth/seller-panel`
 
-Requires a valid token and the `Seller` or `Admin` role. Other authenticated roles receive `403`.
-
-Success (`200`):
-
-```json
-{
-  "success": true,
-  "message": "Seller panel access granted.",
-  "data": {
-    "user": {
-      "id": "e22a15b4-cad5-4e16-b26b-fd6ba109f203",
-      "username": "seller01",
-      "email": "seller@example.com",
-      "role": "Seller"
-    },
-    "panel": "seller"
-  }
-}
-```
+Requires a valid session and the `Seller` or `Admin` role. Other authenticated users receive HTTP 403.
 
 ### `GET /api/auth/admin-dashboard`
 
-Requires a valid token and the `Admin` role exclusively. Other authenticated roles receive `403`.
+Requires a valid session and the `Admin` role. Other authenticated users receive HTTP 403.
 
-Success (`200`):
+## Demonstrate with curl
 
-```json
-{
-  "success": true,
-  "message": "Admin dashboard access granted.",
-  "data": {
-    "user": {
-      "id": "e22a15b4-cad5-4e16-b26b-fd6ba109f203",
-      "username": "admin01",
-      "email": "admin@example.com",
-      "role": "Admin"
-    },
-    "dashboard": "admin"
-  }
-}
-```
-
-## Testing with Postman or Thunder Client
-
-1. Start the service with `npm start`.
-2. Send `POST http://localhost:5000/api/auth/register` with JSON body and `Content-Type: application/json`.
-3. Send `POST http://localhost:5000/api/auth/login` with the new account credentials and copy `data.token`.
-4. Call `/api/auth/me`, `/api/auth/seller-panel`, or `/api/auth/admin-dashboard` with `Authorization: Bearer <SIGNED_JWT>`.
-5. To exercise Seller or Admin routes, set a valid `ROLE_PROVISIONING_KEY` in `.env` and add the `X-Role-Provisioning-Key` header to that role's registration request.
-
-Run the automated integration tests with:
-
-```bash
-npm test
-```
-
-## Operational security notes
-
-- Use a unique, randomly generated JWT secret and separate role-provisioning key in production.
-- Configure `CORS_ORIGIN` to the actual trusted frontend origins instead of `*`.
-- Terminate TLS at a trusted ingress or reverse proxy and use secure deployment secrets.
-- The in-memory adapter and single-instance rate-limit store are not suitable for horizontally scaled production deployments. Use a durable database, audited privileged-role provisioning workflow, and a shared rate-limit store before production use.
-
-## Acceptance criteria and evidence
-
-| Requirement | Implementation | Evidence |
-| --- | --- | --- |
-| Registration validation, unique username/email, password hashing, and Buyer default | `controllers/authController.js`, `models/userModel.js` | `npm test`: default role and duplicate registration tests |
-| Only provisioned Sellers/Admins receive privileged roles | `controllers/authController.js` | `npm test`: rejects Seller registration without key; permits provisioned Seller/Admin |
-| Username/email login and one-hour configurable JWT | `controllers/authController.js`, `config/jwtConfig.js` | `npm test`: successful username and email login; token checked by protected API |
-| Bearer token verification, profile route, Seller/Admin role policy | `middleware/authMiddleware.js`, `middleware/roleMiddleware.js`, `routes/authRoutes.js` | `npm test`: unauthenticated and unauthorized responses; authorized Seller/Admin responses |
-| Helmet, CORS, request rate limiting, request logging, centralized JSON errors | `server.js`, `middleware/rateLimiter.js`, `middleware/errorMiddleware.js` | Server startup smoke check; integration suite asserts standardized success and error structures |
-| Installation, environment setup, API examples, and manual API-client workflow | This README | Follow the installation and demo steps above |
-
-## Reproducible mentor demonstration
-
-Use a clean terminal in the project directory:
-
-```bash
-npm ci
-cp .env.example .env
-```
-
-Replace the example secrets in `.env` with random values (at least 32 characters each), then start the service:
-
-```bash
-npm start
-```
-
-In a second terminal, verify readiness:
-
-```bash
-curl --fail http://localhost:5000/
-```
-
-Create and authenticate a Buyer:
+Create a Buyer, then log in:
 
 ```bash
 curl --fail -X POST http://localhost:5000/api/auth/register \
@@ -317,40 +213,75 @@ curl --fail -X POST http://localhost:5000/api/auth/login \
   -d '{"username":"demo-buyer","password":"demo-password-123"}'
 ```
 
-Copy `data.token` from the login response, then use it as the Bearer token:
+Copy `data.token` from the login response:
 
 ```bash
 curl --fail http://localhost:5000/api/auth/me \
-  -H 'Authorization: Bearer <SIGNED_JWT>'
+  -H 'Authorization: Bearer <ACCESS_TOKEN>'
+
+curl -i http://localhost:5000/api/auth/seller-panel \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>'
 ```
 
-Buyer access to Seller/Admin endpoints should return `403`. To demonstrate Seller and Admin access, register either role with the `X-Role-Provisioning-Key` header and the key configured in `.env`, log in as that user, and repeat the protected route calls. The process-local user store starts empty and resets when the service stops.
+The profile request succeeds; the Buyer request to the Seller panel returns 403. To demonstrate the Seller and Admin routes, add the provisioning header to registration, set the corresponding role, log in, and use the returned access token. Refresh and logout using the request shapes above.
 
-Run the automated validation suite:
+The same requests can be sent from Postman or Thunder Client with JSON content type and the corresponding authorization/header values.
+
+## Tests and validation
+
+The default suite is self-contained and tests HTTP behavior with isolated in-memory test doubles:
 
 ```bash
 npm test
-npm audit --omit=dev
 ```
 
-### Validation record
+For real PostgreSQL repository/session/rate-limit integration coverage, configure a test database in `DATABASE_URL`, apply migrations, and run:
 
-The implementation was validated with the following checks during this submission:
+```bash
+npm run test:db
+```
 
-- `npm test` — passed; covered registration/default Buyer, duplicate rejection, login, protected route permissions, and privileged-role provisioning.
-- `node --check` on application, middleware, model, configuration, route, and test JavaScript files — passed.
-- `git diff --check` — passed.
-- `npm audit --omit=dev` — reported zero vulnerabilities at the time of check.
-- Live startup smoke check — passed; `GET /` returned HTTP 200 and the success readiness payload.
+The DB integration suite skips when `DATABASE_URL` is absent. Use a disposable database for this suite; it creates and deletes test records. Never point destructive test runs at production data.
 
-Re-run the commands above when reviewing a fresh checkout; the validation record documents checks performed, not a guarantee about future dependency versions or deployment configuration.
+Additional checks:
 
-## Design decisions, limitations, and next steps
+```bash
+npm audit --omit=dev
+git diff --check
+```
 
-- **Small modular service:** CommonJS and the built-in Node test runner avoid extra tooling while keeping controller, model, middleware, routes, and configuration responsibilities separate.
-- **Role provisioning:** public registration creates Buyers; an out-of-band shared provisioning key is required for Seller/Admin registration so callers cannot self-promote. In a larger system, replace this bootstrap mechanism with an audited, authenticated administrator workflow or invitation process.
-- **Persistence:** the in-memory adapter has no durability, cross-process uniqueness, or multi-instance sharing. Replace it with a database that enforces unique indexes/constraints and use migrations.
-- **Token lifecycle:** access JWTs are stateless and cannot be revoked before expiry. Add refresh-token rotation, revocation/session tracking, and key rotation if product requirements need them.
-- **Rate limiting:** the current default limiter uses process-local storage. Deploy a shared store behind a trusted proxy and configure Express proxy trust explicitly for multi-instance deployments.
-- **Operations:** configure restrictive production CORS origins, TLS, managed secrets, structured centralized logging, monitoring, and graceful shutdown before public deployment.
-- **Validation scope:** integration tests cover core registration/authentication/RBAC paths but are not a substitute for database integration, load testing, deployment testing, or a formal security review.
+## Acceptance criteria and evidence map
+
+| Requirement | Implementation | Verification |
+| --- | --- | --- |
+| Registration validation, case-insensitive uniqueness, password hashing, Buyer default | `controllers/authController.js`, `models/userModel.js`, migration | `npm test`; `npm run test:db` checks PostgreSQL unique constraints |
+| Controlled Seller/Admin role provisioning | Registration controller and `ROLE_PROVISIONING_KEY` | `npm test` rejects missing provisioning key and verifies authorized roles |
+| Username/email login and configurable access JWT | Auth controller and JWT config | `npm test` login/protected API flow |
+| Persistent users and sessions | PostgreSQL models and SQL migration | `npm run test:db` |
+| Access JWT verification and immediate logout | Auth middleware and session model | `npm test` revokes access following logout |
+| Refresh rotation and token replay handling | Session model/controller | `npm test` verifies single-use refresh and family revocation; PostgreSQL test exercises atomic DB behavior |
+| Buyer/Seller/Admin route policies | Role middleware and routes | `npm test` verifies expected 200/401/403 outcomes |
+| Shared IP rate limits | PostgreSQL rate-limit store | `npm run test:db` checks shared counter operations |
+| HTTP hardening, logging, error handling, health | `server.js`, middleware | `npm test`, manual readiness probe, and production configuration review |
+| Reproducible setup/API usage | This README, `.env.example`, Compose file | Follow setup and curl walkthrough |
+
+## Design decisions and operational notes
+
+- **Access token and session policy:** access JWTs retain a one-hour configurable lifetime for the project requirements. A server-side session ID enables immediate logout/revocation; every protected request checks both session state and the current user/role in PostgreSQL.
+- **Refresh-token storage:** refresh tokens are high-entropy opaque values. Only SHA-256 digests are stored. Rotation is performed in a database transaction; reuse of a consumed token revokes the whole session family.
+- **Database constraints:** normalized generated columns and unique constraints make identity uniqueness case-insensitive and safe under concurrent registration attempts.
+- **Role provisioning:** a shared provisioning key is a controlled bootstrap mechanism, not a replacement for a full administrator identity and audit workflow. Restrict it to trusted deployment/provisioning systems and rotate it if exposed.
+- **Rate limiting:** the PostgreSQL store shares atomic fixed-window counters between replicas. It adds database traffic; monitor its latency and capacity. A dedicated Redis store can be preferable at higher scale.
+- **Maintenance:** expired sessions (and their cascading refresh tokens) and expired rate-limit keys are periodically removed. Retention and cleanup cadence should be reviewed for deployment requirements.
+- **Production deployment:** use TLS, managed database credentials, explicit CORS allowlists, database backups, monitoring, least-privilege DB roles, connection/pool limits, and a secret manager. Configure trusted proxy handling deliberately before deploying behind a reverse proxy.
+- **Testing scope:** unit-level HTTP tests use model doubles; the optional DB suite exercises actual PostgreSQL operations when configured. Passing tests does not replace load testing, deployment checks, or an independent security review.
+
+## Mentor review checklist
+
+1. Follow local setup from a clean checkout.
+2. Inspect the migration and confirm durable user/session records survive service restarts.
+3. Register Buyer, Seller, and Admin users; verify missing provisioning headers fail.
+4. Demonstrate 401 without a token, 403 for a disallowed role, and 200 for allowed roles.
+5. Refresh a token once, replay the old token, and verify the session is revoked.
+6. Log out and verify the same access token no longer works.
+7. Run both test commands and review the documented limitations and next steps.

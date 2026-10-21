@@ -2,8 +2,9 @@
 
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { timingSafeEqual } = require('node:crypto');
+const { createHash, randomBytes, timingSafeEqual } = require('node:crypto');
 const userModel = require('../models/userModel');
+const sessionModel = require('../models/sessionModel');
 const { getJwtConfig } = require('../config/jwtConfig');
 
 const SUPPORTED_ROLES = new Set(['Buyer', 'Seller', 'Admin']);
@@ -137,26 +138,106 @@ async function login(req, res, next) {
         }
 
         const jwtConfig = getJwtConfig();
-        const token = jwt.sign(
-            {
-                id: user.id,
-                username: user.username,
-                email: user.email,
-                role: user.role
-            },
-            jwtConfig.secret,
-            {
-                algorithm: 'HS256',
-                expiresIn: jwtConfig.expiresIn,
-                issuer: jwtConfig.issuer,
-                audience: jwtConfig.audience
-            }
-        );
+        const refreshToken = generateRefreshToken();
+        const sessionExpiry = getRefreshTokenExpiry();
+        const session = await sessionModel.createSession(user.id, hashRefreshToken(refreshToken), sessionExpiry);
+        const token = issueAccessToken(user, session.id);
 
         return res.status(200).json({
             success: true,
             message: 'Login successful.',
-            data: { token, tokenType: 'Bearer', expiresIn: jwtConfig.expiresIn, user: toPublicUser(user) }
+            data: {
+                token,
+                tokenType: 'Bearer',
+                expiresIn: jwtConfig.expiresIn,
+                refreshToken,
+                refreshTokenExpiresAt: sessionExpiry.toISOString(),
+                user: toPublicUser(user)
+            }
+        });
+    } catch (error) {
+        return next(error);
+    }
+}
+
+/**
+ * Rotates a refresh token and issues a replacement access/refresh token pair.
+ * @param {import('express').Request} req Express request.
+ * @param {import('express').Response} res Express response.
+ * @param {import('express').NextFunction} next Express error callback.
+ * @returns {Promise<void>} Resolves after the response or forwarded error.
+ */
+async function refresh(req, res, next) {
+    try {
+        const presentedToken = req.body?.refreshToken;
+        if (typeof presentedToken !== 'string' || presentedToken.length < 40 || presentedToken.length > 128) {
+            return res.status(400).json({
+                success: false,
+                error: 'A valid refreshToken is required.',
+                statusCode: 400
+            });
+        }
+
+        const replacementToken = generateRefreshToken();
+        const expiresAt = getRefreshTokenExpiry();
+        const result = await sessionModel.rotateRefreshToken(
+            hashRefreshToken(presentedToken),
+            hashRefreshToken(replacementToken),
+            expiresAt
+        );
+
+        if (result.status !== 'rotated') {
+            return res.status(401).json({
+                success: false,
+                error: result.status === 'reuse'
+                    ? 'Refresh token reuse detected. The session has been revoked.'
+                    : 'Invalid or expired refresh token.',
+                statusCode: 401
+            });
+        }
+
+        const user = await userModel.findById(result.userId);
+        if (!user) {
+            await sessionModel.revokeSession(result.sessionId);
+            return res.status(401).json({
+                success: false,
+                error: 'The account for this session is unavailable.',
+                statusCode: 401
+            });
+        }
+
+        const jwtConfig = getJwtConfig();
+        return res.status(200).json({
+            success: true,
+            message: 'Token refreshed successfully.',
+            data: {
+                token: issueAccessToken(user, result.sessionId),
+                tokenType: 'Bearer',
+                expiresIn: jwtConfig.expiresIn,
+                refreshToken: replacementToken,
+                refreshTokenExpiresAt: expiresAt.toISOString(),
+                user: toPublicUser(user)
+            }
+        });
+    } catch (error) {
+        return next(error);
+    }
+}
+
+/**
+ * Revokes the current authenticated session and all refresh tokens in its family.
+ * @param {import('express').Request} req Authenticated Express request.
+ * @param {import('express').Response} res Express response.
+ * @param {import('express').NextFunction} next Express error callback.
+ * @returns {Promise<void>} Resolves after the response or forwarded error.
+ */
+async function logout(req, res, next) {
+    try {
+        await sessionModel.revokeSession(req.user.sid);
+        return res.status(200).json({
+            success: true,
+            message: 'Session logged out successfully.',
+            data: { loggedOut: true }
         });
     } catch (error) {
         return next(error);
@@ -173,7 +254,7 @@ function getMe(req, res) {
     return res.status(200).json({
         success: true,
         message: 'Authenticated user profile.',
-        data: { user: req.user }
+        data: { user: toPublicUser(req.user) }
     });
 }
 
@@ -187,7 +268,7 @@ function getSellerPanel(req, res) {
     return res.status(200).json({
         success: true,
         message: 'Seller panel access granted.',
-        data: { user: req.user, panel: 'seller' }
+        data: { user: toPublicUser(req.user), panel: 'seller' }
     });
 }
 
@@ -201,7 +282,7 @@ function getAdminDashboard(req, res) {
     return res.status(200).json({
         success: true,
         message: 'Admin dashboard access granted.',
-        data: { user: req.user, dashboard: 'admin' }
+        data: { user: toPublicUser(req.user), dashboard: 'admin' }
     });
 }
 
@@ -237,9 +318,67 @@ function toPublicUser(user) {
     };
 }
 
+/**
+ * Issues a short-lived access JWT tied to a revocable server-side session.
+ * @param {object} user Persisted user record.
+ * @param {string} sessionId Authentication session identifier.
+ * @returns {string} Signed access token.
+ */
+function issueAccessToken(user, sessionId) {
+    const jwtConfig = getJwtConfig();
+    return jwt.sign(
+        {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+            sid: sessionId
+        },
+        jwtConfig.secret,
+        {
+            algorithm: 'HS256',
+            expiresIn: jwtConfig.expiresIn,
+            issuer: jwtConfig.issuer,
+            audience: jwtConfig.audience,
+            subject: user.id
+        }
+    );
+}
+
+/**
+ * Generates a high-entropy opaque refresh token.
+ * @returns {string} Base64url-encoded random token.
+ */
+function generateRefreshToken() {
+    return randomBytes(48).toString('base64url');
+}
+
+/**
+ * Hashes a refresh token before it is stored in persistent storage.
+ * @param {string} token Opaque refresh token.
+ * @returns {string} SHA-256 hex digest.
+ */
+function hashRefreshToken(token) {
+    return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+/**
+ * Calculates the absolute refresh session expiry from validated configuration.
+ * @returns {Date} Expiration timestamp.
+ */
+function getRefreshTokenExpiry() {
+    const days = Number(process.env.REFRESH_TOKEN_TTL_DAYS || '30');
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+        throw new Error('REFRESH_TOKEN_TTL_DAYS must be a whole number from 1 to 365.');
+    }
+    return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+}
+
 module.exports = {
     register,
     login,
+    refresh,
+    logout,
     getMe,
     getSellerPanel,
     getAdminDashboard

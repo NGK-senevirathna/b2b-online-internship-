@@ -11,7 +11,11 @@ const JWT_AUDIENCE = 'b2b-api';
  */
 function getJwtConfig() {
     const secret = process.env.JWT_SECRET;
-    if (typeof secret !== 'string' || secret.length < 32) {
+    if (
+        typeof secret !== 'string' ||
+        secret.length < 32 ||
+        (process.env.NODE_ENV === 'production' && secret.toLowerCase().includes('replace-this'))
+    ) {
         throw new Error('JWT_SECRET must be configured with at least 32 characters.');
     }
 

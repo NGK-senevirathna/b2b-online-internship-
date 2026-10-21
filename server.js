@@ -10,6 +10,7 @@ const authRoutes = require('./routes/authRoutes');
 const rateLimiter = require('./middleware/rateLimiter');
 const { getJwtConfig } = require('./config/jwtConfig');
 const { notFoundHandler, errorHandler } = require('./middleware/errorMiddleware');
+const { checkConnection, closePool } = require('./config/database');
 
 /**
  * Creates the configured Express application.
@@ -22,7 +23,17 @@ function createApp() {
         .map((origin) => origin.trim())
         .filter(Boolean);
 
+    if (process.env.NODE_ENV === 'production' && allowedOrigins.includes('*')) {
+        throw new Error('CORS_ORIGIN must list explicit trusted origins in production.');
+    }
+
     app.disable('x-powered-by');
+    if (process.env.TRUST_PROXY) {
+        const trustProxy = /^\d+$/.test(process.env.TRUST_PROXY)
+            ? Number(process.env.TRUST_PROXY)
+            : process.env.TRUST_PROXY.split(',').map((value) => value.trim());
+        app.set('trust proxy', trustProxy);
+    }
     app.use(helmet());
     app.use(cors({
         origin(origin, callback) {
@@ -36,13 +47,36 @@ function createApp() {
     app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
     app.use(rateLimiter);
 
-    /** Returns service readiness using the standard success response shape. */
+    /** Returns service liveness using the standard success response shape. */
     app.get('/', (req, res) => {
         return res.status(200).json({
             success: true,
             message: 'B2B Auth Microservice is running.',
             data: { status: 'ok' }
         });
+    });
+
+    /** Returns liveness for container and load-balancer health checks. */
+    app.get('/health/live', (req, res) => {
+        return res.status(200).json({
+            success: true,
+            message: 'Service is live.',
+            data: { status: 'ok' }
+        });
+    });
+
+    /** Verifies PostgreSQL connectivity before reporting readiness. */
+    app.get('/health/ready', async (req, res, next) => {
+        try {
+            await checkConnection();
+            return res.status(200).json({
+                success: true,
+                message: 'Service is ready.',
+                data: { status: 'ready', database: 'connected' }
+            });
+        } catch (error) {
+            return next(error);
+        }
     });
 
     app.use('/api/auth', authRoutes);
@@ -54,11 +88,20 @@ function createApp() {
 
 /**
  * Validates configuration and starts the HTTP server.
- * @returns {import('node:http').Server} Listening HTTP server.
+ * @returns {Promise<import('node:http').Server>} Listening HTTP server.
  * @throws {Error} If the required JWT configuration is invalid.
  */
-function startServer() {
+async function startServer() {
     getJwtConfig();
+    if (
+        process.env.NODE_ENV === 'production' &&
+        (typeof process.env.ROLE_PROVISIONING_KEY !== 'string' ||
+            process.env.ROLE_PROVISIONING_KEY.length < 32 ||
+            process.env.ROLE_PROVISIONING_KEY.toLowerCase().includes('replace-this'))
+    ) {
+        throw new Error('ROLE_PROVISIONING_KEY must be configured with at least 32 non-placeholder characters in production.');
+    }
+    await checkConnection();
 
     const app = createApp();
     const port = Number(process.env.PORT || '5000');
@@ -66,13 +109,48 @@ function startServer() {
         throw new Error('PORT must be a valid TCP port between 1 and 65535.');
     }
 
-    return app.listen(port, () => {
-        console.info(`B2B Auth Microservice listening on port ${port}.`);
+    return new Promise((resolve, reject) => {
+        const server = app.listen(port, () => {
+            console.info(`B2B Auth Microservice listening on port ${port}.`);
+            resolve(server);
+        });
+        server.once('error', reject);
     });
 }
 
 if (require.main === module) {
-    startServer();
+    startServer()
+        .then((server) => {
+            let shuttingDown = false;
+            const shutdown = (signal) => {
+                if (shuttingDown) return;
+                shuttingDown = true;
+                console.info(`${signal} received; closing HTTP server.`);
+                server.close(async (error) => {
+                    rateLimiter.shutdown();
+                    try {
+                        await closePool();
+                    } catch (closeError) {
+                        console.error('Failed to close PostgreSQL pool cleanly.', closeError);
+                        process.exitCode = 1;
+                    }
+                    if (error) {
+                        console.error('Failed to close HTTP server cleanly.', error);
+                        process.exitCode = 1;
+                    }
+                });
+            };
+
+            process.once('SIGINT', () => shutdown('SIGINT'));
+            process.once('SIGTERM', () => shutdown('SIGTERM'));
+        })
+        .catch((error) => {
+            console.error('Service startup failed.', error);
+            closePool().catch((closeError) => {
+                console.error('Failed to close PostgreSQL pool after startup failure.', closeError);
+            });
+            process.exitCode = 1;
+        });
 }
 
 module.exports = { createApp, startServer };

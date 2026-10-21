@@ -2,18 +2,82 @@
 
 const { after, before, test } = require('node:test');
 const assert = require('node:assert/strict');
+const { createHash, randomUUID } = require('node:crypto');
 
 process.env.JWT_SECRET = 'test-secret-that-is-long-enough-for-jwt-signing';
 process.env.JWT_EXPIRES_IN = '1h';
+process.env.REFRESH_TOKEN_TTL_DAYS = '30';
 process.env.ROLE_PROVISIONING_KEY = 'test-role-provisioning-key-with-more-than-32-chars';
 process.env.NODE_ENV = 'test';
 
+const userModel = require('../models/userModel');
+const sessionModel = require('../models/sessionModel');
 const { createApp } = require('../server');
 
 let server;
 let baseUrl;
+const testUsers = [];
+const testSessions = new Map();
+const testRefreshTokens = new Map();
+
+function hashToken(token) {
+    return createHash('sha256').update(token).digest('hex');
+}
 
 before(async () => {
+    userModel.findByUsername = async (username) =>
+        testUsers.find((user) => user.username.toLowerCase() === username.toLowerCase());
+    userModel.findByEmail = async (email) =>
+        testUsers.find((user) => user.email.toLowerCase() === email.toLowerCase());
+    userModel.findByIdentifier = async (identifier) =>
+        testUsers.find((user) =>
+            user.username.toLowerCase() === identifier.toLowerCase() ||
+            user.email.toLowerCase() === identifier.toLowerCase()
+        );
+    userModel.findById = async (id) => testUsers.find((user) => user.id === id);
+    userModel.createUser = async (data) => {
+        if (await userModel.findByUsername(data.username) || await userModel.findByEmail(data.email)) {
+            const error = new Error('Duplicate user');
+            error.code = 'DUPLICATE_USER';
+            throw error;
+        }
+        const user = { id: randomUUID(), ...data, createdAt: new Date().toISOString() };
+        testUsers.push(user);
+        return user;
+    };
+    sessionModel.createSession = async (userId, refreshTokenHash, expiresAt) => {
+        const id = randomUUID();
+        testSessions.set(id, { userId, expiresAt, revoked: false });
+        testRefreshTokens.set(refreshTokenHash, { sessionId: id, consumed: false });
+        return { id, userId };
+    };
+    sessionModel.rotateRefreshToken = async (oldHash, newHash, expiresAt) => {
+        const token = testRefreshTokens.get(oldHash);
+        if (!token) return { status: 'invalid' };
+        const session = testSessions.get(token.sessionId);
+        if (token.consumed) {
+            session.revoked = true;
+            return { status: 'reuse' };
+        }
+        if (!session || session.revoked || session.expiresAt <= new Date()) {
+            return { status: 'invalid' };
+        }
+        token.consumed = true;
+        session.expiresAt = expiresAt;
+        testRefreshTokens.set(newHash, { sessionId: token.sessionId, consumed: false });
+        return { status: 'rotated', sessionId: token.sessionId, userId: session.userId };
+    };
+    sessionModel.revokeSession = async (id) => {
+        const session = testSessions.get(id);
+        if (!session) return false;
+        session.revoked = true;
+        return true;
+    };
+    sessionModel.isSessionActive = async (id) => {
+        const session = testSessions.get(id);
+        return Boolean(session && !session.revoked && session.expiresAt > new Date());
+    };
+
     const app = createApp();
     server = app.listen(0);
     await new Promise((resolve) => server.once('listening', resolve));
@@ -53,6 +117,30 @@ test('registration, login, and role-protected routes follow the authorization po
         password: 'safe-test-password'
     };
 
+    await t.test('rejects malformed registration data and invalid credentials', async () => {
+        const invalidRegistration = await requestJson('/api/auth/register', {
+            method: 'POST',
+            body: JSON.stringify({
+                username: 'no',
+                email: 'not-an-email',
+                password: 'short',
+                role: 'Root'
+            })
+        });
+        assert.equal(invalidRegistration.response.status, 400);
+        assert.deepEqual(
+            Object.keys(invalidRegistration.body).sort(),
+            ['error', 'statusCode', 'success']
+        );
+
+        const invalidLogin = await requestJson('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ username: 'missing-user', password: 'incorrect-password' })
+        });
+        assert.equal(invalidLogin.response.status, 401);
+        assert.equal(invalidLogin.body.error, 'Invalid username/email or password.');
+    });
+
     await t.test('registers with the default Buyer role and rejects duplicates', async () => {
         const created = await requestJson('/api/auth/register', {
             method: 'POST',
@@ -61,6 +149,7 @@ test('registration, login, and role-protected routes follow the authorization po
         assert.equal(created.response.status, 201);
         assert.equal(created.body.data.user.role, 'Buyer');
         assert.equal('passwordHash' in created.body.data.user, false);
+        assert.equal('passwordHash' in testUsers[0], true);
 
         const duplicate = await requestJson('/api/auth/register', {
             method: 'POST',
@@ -79,6 +168,7 @@ test('registration, login, and role-protected routes follow the authorization po
     });
     assert.equal(login.response.status, 200);
     const buyerToken = login.body.data.token;
+    const buyerRefreshToken = login.body.data.refreshToken;
     const authorization = { authorization: `Bearer ${buyerToken}` };
 
     await t.test('allows authenticated profile access and denies unauthorized roles', async () => {
@@ -164,5 +254,33 @@ test('registration, login, and role-protected routes follow the authorization po
         const adminDashboard = await requestJson('/api/auth/admin-dashboard', { headers: adminAuthorization });
         assert.equal(sellerPanel.response.status, 200);
         assert.equal(adminDashboard.response.status, 200);
+
+        const logout = await requestJson('/api/auth/logout', {
+            method: 'POST',
+            headers: adminAuthorization
+        });
+        assert.equal(logout.response.status, 200);
+        const revokedAccess = await requestJson('/api/auth/me', { headers: adminAuthorization });
+        assert.equal(revokedAccess.response.status, 401);
+    });
+
+    await t.test('rotates refresh tokens and revokes a family after token reuse', async () => {
+        const refreshed = await requestJson('/api/auth/refresh', {
+            method: 'POST',
+            body: JSON.stringify({ refreshToken: buyerRefreshToken })
+        });
+        assert.equal(refreshed.response.status, 200);
+        assert.notEqual(refreshed.body.data.refreshToken, buyerRefreshToken);
+
+        const refreshReplay = await requestJson('/api/auth/refresh', {
+            method: 'POST',
+            body: JSON.stringify({ refreshToken: buyerRefreshToken })
+        });
+        assert.equal(refreshReplay.response.status, 401);
+
+        const revokedAccess = await requestJson('/api/auth/me', {
+            headers: { authorization: `Bearer ${refreshed.body.data.token}` }
+        });
+        assert.equal(revokedAccess.response.status, 401);
     });
 });

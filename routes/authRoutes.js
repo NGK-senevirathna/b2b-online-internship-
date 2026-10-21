@@ -4,6 +4,8 @@ const express = require('express');
 const {
     register,
     login,
+    refresh,
+    logout,
     getMe,
     getSellerPanel,
     getAdminDashboard
@@ -18,6 +20,12 @@ router.post('/register', register);
 
 /** Authenticates a user and issues a signed JWT. */
 router.post('/login', login);
+
+/** Exchanges a valid refresh token for a rotated token pair. */
+router.post('/refresh', refresh);
+
+/** Revokes the current session and its refresh-token family. */
+router.post('/logout', authenticateToken, logout);
 
 /** Returns the current profile to any authenticated user. */
 router.get('/me', authenticateToken, getMe);
