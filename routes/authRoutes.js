@@ -1,44 +1,31 @@
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+'use strict';
 
-// Temporary in-memory database (Low RAM & Fast)
-const users = [];
+const express = require('express');
+const {
+    register,
+    login,
+    getMe,
+    getSellerPanel,
+    getAdminDashboard
+} = require('../controllers/authController');
+const { authenticateToken } = require('../middleware/authMiddleware');
+const { requireRoles } = require('../middleware/roleMiddleware');
 
-// Register User
-const register = async (req, res) => {
-    try {
-        const { username, password, role } = req.body;
-        
-        const existingUser = users.find(u => u.username === username);
-        if (existingUser) return res.status(400).json({ message: "User already exists!" });
+const router = express.Router();
 
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = { id: users.length + 1, username, password: hashedPassword, role: role || 'Buyer' };
-        
-        users.push(newUser);
-        res.status(201).json({ message: "User registered successfully!", userId: newUser.id });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
+/** Registers a user account. */
+router.post('/register', register);
 
-// Login User
-const login = async (req, res) => {
-    try {
-        const { username, password } = req.body;
-        
-        const user = users.find(u => u.username === username);
-        if (!user) return res.status(404).json({ message: "User not found!" });
+/** Authenticates a user and issues a signed JWT. */
+router.post('/login', login);
 
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ message: "Invalid credentials!" });
+/** Returns the current profile to any authenticated user. */
+router.get('/me', authenticateToken, getMe);
 
-        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, process.env.JWT_SECRET, { expiresIn: '1h' });
-        
-        res.json({ message: "Login successful", token });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
+/** Grants access to Seller and Admin users. */
+router.get('/seller-panel', authenticateToken, requireRoles('Seller', 'Admin'), getSellerPanel);
 
-module.exports = { register, login };
+/** Grants access exclusively to Admin users. */
+router.get('/admin-dashboard', authenticateToken, requireRoles('Admin'), getAdminDashboard);
+
+module.exports = router;
