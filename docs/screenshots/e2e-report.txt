@@ -1,0 +1,34 @@
+UI end-to-end test report
+Target: http://localhost:5055 (CONTRACT MOCK, in-memory, NOT PostgreSQL)
+Run: 2026-10-26T19:49:36.235Z
+Result: 29/29 steps passed, 37 screenshots
+
+PASS  sign-in page loads, tokens are not stored anywhere
+PASS  wrong password shows a clear error
+PASS  register Admin, Seller and Buyer through the UI
+PASS  registering Seller with a wrong provisioning key is refused
+PASS  Seller: empty product list, form validation, create products
+PASS  Seller: bulk data for pagination (API set-up)
+PASS  Seller: low-stock filter, edit, archive with confirmation, restore
+PASS  Seller: stock adjustment with note, guard against negative stock, history
+PASS  Buyer: catalogue, search, sort, pagination, safe rendering of hostile text
+PASS  Buyer: add to cart, 409 stock conflict message, edit quantity
+PASS  Buyer: stock drops after adding, cart warns and blocks checkout
+PASS  Buyer: checkout validation, Idempotency-Key, double click makes one order
+PASS  Buyer: cancel a pending order, stock is restored
+PASS  Buyer: printable invoice
+PASS  Buyer: checkout 409 when stock vanishes after the page was opened
+PASS  Seller: sees orders with own lines only, never the delivery address
+PASS  Admin: dashboard cards
+PASS  Admin: filter orders, move through the workflow, mark invoice paid
+PASS  Admin: users list, role change, deactivate and reactivate, own row is protected
+PASS  Admin: audit log with filters, and all-products view
+PASS  Error: server-side 403 is explained in plain language
+PASS  Error: no access page for a route outside your role
+PASS  Error: offline shows a retry panel, then recovers
+PASS  Session: expired access token is refreshed transparently (mock hook)
+PASS  Keyboard: skip link, sign in with Tab/Enter only, focus lands on the page title, Escape closes dialogs
+PASS  Mobile (390px): no sideways scroll, menu opens, tables become cards
+PASS  Security: tokens never in storage, reload signs out, sign-out revokes the session
+PASS  Error: repeated failed sign-ins show the 429 message
+PASS  No script errors and no Content-Security-Policy violations in any page

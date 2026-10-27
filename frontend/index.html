@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f8fc">
+    <meta name="description" content="B2B order management portal for buyers, sellers, and administrators.">
+    <title>Northstar | B2B Order Management</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./app.js"></script>
+</head>
+<body>
+    <a class="skip-link" href="#view-anchor">Skip to main content</a>
+    <div id="busy-bar" class="busy-bar" aria-hidden="true"></div>
+    <div class="app-shell">
+        <aside id="sidebar" class="sidebar" aria-label="Main navigation">
+            <a class="brand" href="#/" aria-label="Northstar home">
+                <span class="brand-mark" aria-hidden="true">N</span>
+                <span class="brand-name">northstar<span class="brand-period">.</span></span>
+            </a>
+            <button id="menu-button" class="menu-button" type="button" aria-expanded="false" aria-controls="side-nav" hidden>
+                <span aria-hidden="true">☰</span> Menu
+            </button>
+
+            <div class="workspace-label">WORKSPACE</div>
+            <nav id="side-nav" class="side-nav" aria-label="Sections"></nav>
+
+            <div class="sidebar-bottom">
+                <div class="secure-note">
+                    <span class="secure-icon" aria-hidden="true">✓</span>
+                    <div>
+                        <strong>Secure access</strong>
+                        <span>Protected by your organization</span>
+                    </div>
+                </div>
+                <div class="sidebar-foot">B2B ORDER PORTAL <span>v2.0</span></div>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="topbar">
+                <div class="breadcrumb">Workspace <span>/</span> <strong id="crumb">Sign in</strong></div>
+                <div id="topbar-session" class="topbar-session" hidden>
+                    <a id="top-cart" class="text-button" href="#/cart" hidden>Cart (0)</a>
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <span id="topbar-username"></span>
+                    <button id="signout-button" class="text-button" type="button">Sign out</button>
+                </div>
+            </header>
+
+            <section class="page-wrap">
+                <div class="page-heading" id="page-heading">
+                    <div>
+                        <div class="eyebrow"><span class="eyebrow-line"></span> B2B IDENTITY</div>
+                        <h1 id="page-title">Your business, <span>connected.</span></h1>
+                        <p id="page-subtitle">Sign in to securely access your organization's workspace.</p>
+                    </div>
+                    <div class="heading-art" aria-hidden="true">
+                        <span class="art-orbit orbit-one"></span>
+                        <span class="art-orbit orbit-two"></span>
+                        <span class="art-center">N</span>
+                        <span class="art-spark spark-one"></span>
+                        <span class="art-spark spark-two"></span>
+                    </div>
+                </div>
+
+                <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+                <div id="alert-region" class="notice" role="alert" hidden></div>
+                <span id="view-anchor" tabindex="-1"></span>
+
+                <section id="auth-view" class="auth-layout" aria-label="Account access">
+                    <div class="auth-card">
+                        <div class="auth-tabs" role="tablist" aria-label="Authentication options">
+                            <button class="tab-button is-selected" id="login-tab" type="button" role="tab"
+                                aria-selected="true" aria-controls="login-panel">Sign in</button>
+                            <button class="tab-button" id="register-tab" type="button" role="tab"
+                                aria-selected="false" aria-controls="register-panel">Create account</button>
+                        </div>
+
+                        <form id="login-panel" class="auth-form" role="tabpanel" aria-labelledby="login-tab">
+                            <div class="form-heading">
+                                <span class="form-icon" aria-hidden="true">↗</span>
+                                <div>
+                                    <h2>Welcome back</h2>
+                                    <p>Enter your credentials to continue.</p>
+                                </div>
+                            </div>
+                            <label for="login-identifier">Username or email</label>
+                            <input id="login-identifier" name="identifier" autocomplete="username"
+                                placeholder="you@company.com" required>
+                            <label for="login-password">Password</label>
+                            <input id="login-password" name="password" type="password"
+                                autocomplete="current-password" placeholder="Enter your password" required>
+                            <button class="primary-button" type="submit">
+                                Sign in <span aria-hidden="true">→</span>
+                            </button>
+                            <p class="form-footnote">Access is protected with encrypted credentials and session controls.</p>
+                        </form>
+
+                        <form id="register-panel" class="auth-form" role="tabpanel"
+                            aria-labelledby="register-tab" hidden>
+                            <div class="form-heading">
+                                <span class="form-icon" aria-hidden="true">＋</span>
+                                <div>
+                                    <h2>Create your account</h2>
+                                    <p>Start with a secure Buyer account.</p>
+                                </div>
+                            </div>
+                            <label for="register-username">Username</label>
+                            <input id="register-username" name="username" autocomplete="username"
+                                minlength="3" maxlength="30" pattern="[A-Za-z0-9_.\-]{3,30}"
+                                placeholder="e.g. acme-buyer" required>
+                            <label for="register-email">Business email</label>
+                            <input id="register-email" name="email" type="email" autocomplete="email"
+                                maxlength="254" placeholder="you@company.com" required>
+                            <label for="register-password">Password</label>
+                            <input id="register-password" name="password" type="password"
+                                autocomplete="new-password" minlength="8" maxlength="72"
+                                placeholder="At least 8 characters" required>
+                            <label for="register-role">Account role</label>
+                            <select id="register-role" name="role">
+                                <option value="Buyer">Buyer</option>
+                                <option value="Seller">Seller (provisioning key required)</option>
+                                <option value="Admin">Admin (provisioning key required)</option>
+                            </select>
+                            <div id="provisioning-field" class="provisioning-field" hidden>
+                                <label for="provisioning-key">Role provisioning key</label>
+                                <input id="provisioning-key" name="provisioningKey" type="password"
+                                    autocomplete="off" placeholder="Provided by your administrator">
+                                <span class="field-help">This key is sent only with this registration request.</span>
+                            </div>
+                            <button class="primary-button" type="submit">
+                                Create account <span aria-hidden="true">→</span>
+                            </button>
+                            <p class="form-footnote">Seller and Admin roles require authorization from your organization.</p>
+                        </form>
+                    </div>
+
+                    <aside class="info-card">
+                        <div class="info-card-top">
+                            <span class="info-overline">ONE PLATFORM</span>
+                            <span class="info-icon" aria-hidden="true">✳</span>
+                        </div>
+                        <h2>Built for the way<br>business works.</h2>
+                        <p>One secure identity for your B2B marketplace. Your role gives you access to the tools you need.</p>
+                        <div class="role-list">
+                            <div class="role-row">
+                                <span class="role-symbol buyer-symbol">B</span>
+                                <div><strong>Buyer</strong><span>Explore your account</span></div>
+                                <span class="role-check" aria-hidden="true">✓</span>
+                            </div>
+                            <div class="role-row">
+                                <span class="role-symbol seller-symbol">S</span>
+                                <div><strong>Seller</strong><span>Manage your seller workspace</span></div>
+                                <span class="role-check" aria-hidden="true">✓</span>
+                            </div>
+                            <div class="role-row">
+                                <span class="role-symbol admin-symbol">A</span>
+                                <div><strong>Administrator</strong><span>Oversee platform access</span></div>
+                                <span class="role-check" aria-hidden="true">✓</span>
+                            </div>
+                        </div>
+                        <div class="info-card-footer"><span></span> ENCRYPTED · ROLE-BASED · READY</div>
+                    </aside>
+                </section>
+
+                <section id="app-view" class="app-view" hidden aria-label="Workspace">
+                    <div id="view"></div>
+                </section>
+
+                <footer class="page-footer">
+                    <span>© 2026 NORTHSTAR BUSINESS</span>
+                    <span><i></i> Secure B2B ordering</span>
+                </footer>
+            </section>
+        </main>
+    </div>
+    <div id="modal-root"></div>
+</body>
+</html>

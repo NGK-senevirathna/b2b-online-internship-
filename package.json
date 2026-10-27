@@ -1,0 +1,31 @@
+{
+  "name": "b2b-order-management-platform",
+  "version": "1.0.0",
+  "description": "B2B order management platform: role-based catalogue, carts, orders, invoices, stock control and audit trail.",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "db:migrate": "node scripts/migrate.js",
+    "db:seed": "node scripts/seed.js",
+    "test": "node --test test/auth.test.js test/validation.test.js",
+    "test:db": "npm run db:migrate && node --test test/database.integration.test.js test/commerce.integration.test.js",
+    "audit": "npm audit --omit=dev",
+    "e2e": "node e2e/ui.e2e.js",
+    "e2e:mock": "node e2e/mock-api-server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "pg": "^8.23.1"
+  }
+}
